@@ -5,7 +5,7 @@
 #
 # Host folders and settings can be overridden in a .env file next to this one
 # (MUSIC_DIR, CACHE_DIR, ADS_DIR, ADS_CACHE_DIR, RADIO_PORT, RADIO_UID, RADIO_GID,
-# RADIO_SKIP_TOKEN).
+# RADIO_SKIP_TOKEN, RADIO_TRUSTED_PROXIES).
 
 x-common: &common
   build: .
@@ -21,6 +21,7 @@ services:
       - "${RADIO_PORT:-8000}:8000"
     environment:
       RADIO_SKIP_TOKEN: ${RADIO_SKIP_TOKEN:-}
+      RADIO_TRUSTED_PROXIES: ${RADIO_TRUSTED_PROXIES:-}   # see README "Behind nginx"
     volumes:
       - ${CACHE_DIR:-./cache}:/cache:ro
       - ${ADS_CACHE_DIR:-./ads-cache}:/ads-cache:ro

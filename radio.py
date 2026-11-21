@@ -23,6 +23,7 @@ Usage:
 import argparse
 import collections
 import html
+import ipaddress
 import json
 import logging
 import math
@@ -489,12 +490,52 @@ poll(); setInterval(poll,5000);
 </script></body></html>"""
 
 
+def parse_networks(spec: str) -> list:
+    """'127.0.0.1, 172.16.0.0/12' -> [IPv4Network, ...]"""
+    return [ipaddress.ip_network(part.strip(), strict=False) for part in spec.split(",") if part.strip()]
+
+
+def real_client_ip(peer: str, headers, trusted: list) -> str:
+    """
+    The listener's address. If the TCP peer is a trusted reverse proxy, walk
+    X-Forwarded-For from the right (each proxy appends the address it saw) and
+    return the first address that isn't one of our proxies. Headers from
+    untrusted peers are ignored, so nobody can spoof their address.
+    """
+    def is_trusted(addr):
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        ip = getattr(ip, "ipv4_mapped", None) or ip
+        return any(ip in net for net in trusted)
+
+    if not trusted or not is_trusted(peer):
+        return peer
+    chain = [a.strip() for a in ",".join(headers.get_all("X-Forwarded-For") or []).split(",") if a.strip()]
+    if not chain and headers.get("X-Real-IP"):
+        chain = [headers["X-Real-IP"].strip()]
+    for addr in reversed(chain):
+        if not is_trusted(addr):
+            return addr
+    return chain[0] if chain else peer
+
+
 def make_handler(ctx):
     class Handler(BaseHTTPRequestHandler):
         server_version = "radio.py"
 
+        @property
+        def client_ip(self):
+            if not hasattr(self, "_client_ip"):
+                headers = getattr(self, "headers", None)  # absent if the request line was malformed
+                if headers is None:
+                    return self.client_address[0]
+                self._client_ip = real_client_ip(self.client_address[0], headers, ctx.trusted_proxies)
+            return self._client_ip
+
         def log_message(self, fmt, *args):
-            log.debug("%s " + fmt, self.client_address[0], *args)
+            log.debug("%s " + fmt, self.client_ip, *args)
 
         def _send(self, code, body: bytes, ctype):
             self.send_response(code)
@@ -539,6 +580,7 @@ def make_handler(ctx):
             self.send_header("Content-Type", ctx.mime)
             self.send_header("Cache-Control", "no-cache, no-store")
             self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")   # tells nginx not to buffer the stream
             self.send_header("icy-name", ctx.name)
             self.send_header("icy-br", ctx.bitrate.rstrip("kK"))
             if icy:
@@ -550,7 +592,7 @@ def make_handler(ctx):
             # resumes; with one, the listener is dropped and the player has to reconnect.
             self.connection.settimeout(30)
             listener = ctx.broadcaster.subscribe()
-            log.info("listener connected from %s (%d total)", self.client_address[0], ctx.broadcaster.count())
+            log.info("listener connected from %s (%d total)", self.client_ip, ctx.broadcaster.count())
             until_meta, last_title = ICY_METAINT, [None]
             try:
                 while listener.alive:
@@ -572,7 +614,7 @@ def make_handler(ctx):
                 pass
             finally:
                 ctx.broadcaster.unsubscribe(listener)
-                log.info("listener %s left (%d total)", self.client_address[0], ctx.broadcaster.count())
+                log.info("listener %s left (%d total)", self.client_ip, ctx.broadcaster.count())
 
     return Handler
 
@@ -589,6 +631,9 @@ def main():
     ap.add_argument("--bitrate", default="192k")
     ap.add_argument("--history", type=int, default=50, help="don't replay any of the last N tracks across shuffles")
     ap.add_argument("--rescan", type=float, default=60, help="seconds between library rescans")
+    ap.add_argument("--trusted-proxies", default=os.environ.get("RADIO_TRUSTED_PROXIES", ""),
+                    help="comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For "
+                         "header is believed, e.g. 127.0.0.1,172.16.0.0/12 (default: none)")
     ap.add_argument("--skip-token", default=os.environ.get("RADIO_SKIP_TOKEN", ""),
                     help="require this token for /skip (default: anyone can skip)")
     ap.add_argument("--ads", type=Path, help="directory of ads prepared by prepare.py (optional)")
@@ -645,6 +690,12 @@ def main():
         pass
     ctx = Ctx()
     ctx.name, ctx.crossfade, ctx.bitrate, ctx.skip_token = args.name, args.crossfade, args.bitrate, args.skip_token
+    try:
+        ctx.trusted_proxies = parse_networks(args.trusted_proxies)
+    except ValueError as e:
+        raise SystemExit(f"--trusted-proxies: {e}")
+    if ctx.trusted_proxies:
+        log.info("trusting X-Forwarded-For from %s", ", ".join(map(str, ctx.trusted_proxies)))
     ctx.mime = "audio/mpeg" if args.format == "mp3" else "audio/aac"
     ctx.library, ctx.state, ctx.mixer, ctx.broadcaster = library, state, mixer, broadcaster
 

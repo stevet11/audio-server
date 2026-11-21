@@ -71,6 +71,7 @@ If you change `--lufs`, `--true-peak`, `--no-trim`, `--max-gap` or `--gap-keep`,
 | `--history` | 50 | when the shuffle restarts, don't replay any of the last N tracks (capped at half the library) |
 | `--rescan` | 60 | seconds between library rescans |
 | `--skip-token` | none | require `?token=…` to skip (or set `RADIO_SKIP_TOKEN`) |
+| `--trusted-proxies` | none | IPs/CIDRs of reverse proxies whose `X-Forwarded-For` is believed (or set `RADIO_TRUSTED_PROXIES`); see [Behind nginx](#behind-nginx) |
 | `--ads` | none | directory of ads prepared with `prepare.py`; enables ad breaks |
 | `--ad-interval` | 15 | minutes of airtime between ad breaks |
 | `--ads-per-break` | 1 | ads played back to back in each break |
@@ -154,7 +155,45 @@ WantedBy=multi-user.target
 
 A cron job like `*/30 * * * * python3 /opt/radio/prepare.py /srv/music /srv/radio-cache --prune` keeps the cache in sync with your music folder.
 
+## Behind nginx
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host              $host;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location /stream {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_http_version 1.1;
+    proxy_buffering    off;      # send audio as it arrives
+    proxy_cache        off;      # never cache a live stream
+    proxy_read_timeout 1h;       # long-lived connection
+    gzip               off;
+}
+```
+
+nginx forwards the `Icy-MetaData` request header by default, so players that ask for titles still get them.
+
+`/stream` sends `X-Accel-Buffering: no`, so nginx won't buffer it even without `proxy_buffering off`. The explicit settings are still worth having. If nginx has a `proxy_cache` configured for the whole site, `proxy_cache off` keeps the stream out of it. Pages and `/status` are sent with `Cache-Control: no-cache`.
+
+Real client IPs: by default the server logs the address that connected to it, which is nginx. To log listeners' real addresses, tell it which proxies to trust:
+
+| where nginx runs | setting |
+|---|---|
+| same host, radio.py run directly | `--trusted-proxies 127.0.0.1` |
+| same host, radio in Docker (published port) | `RADIO_TRUSTED_PROXIES=172.16.0.0/12` in `.env` (connections arrive from the Docker bridge gateway) |
+| another container on the same Docker network | that network's subnet, e.g. `172.16.0.0/12` |
+| another machine | that machine's IP |
+
+The server only believes `X-Forwarded-For` / `X-Real-IP` when the connection comes from a trusted proxy. A listener who connects directly and sends a fake header still gets logged by their real address. If you're not sure which address nginx connects from, run with `-v` and look at the log, or check the "listener connected from" line.
+
 ## Notes
 
 - Disk: the FLAC cache is lossless, so it's roughly 20–30 MB per 4-minute song.
-- The server has no authentication apart from the optional skip token. To expose it to the internet, put it behind a reverse proxy (nginx or Caddy) for TLS, and turn off proxy buffering for `/stream`.
+- The server has no authentication apart from the optional skip token. To expose it to the internet, put it behind a reverse proxy for TLS (see [Behind nginx](#behind-nginx)).
