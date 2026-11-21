@@ -452,13 +452,15 @@ PAGE = """<!doctype html>
  body{{font:16px/1.5 system-ui,sans-serif;background:#111;color:#eee;display:grid;place-items:center;min-height:100vh;margin:0}}
  main{{width:min(92vw,460px)}} h1{{font-size:14px;letter-spacing:.12em;text-transform:uppercase;color:#888;margin:0 0 24px}}
  #title{{font-size:28px;font-weight:600;line-height:1.2}} #artist{{color:#aaa;margin:4px 0 24px}}
- audio{{width:100%}} button{{margin-top:16px;background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:8px 16px;cursor:pointer}}
+ .controls{{display:flex;gap:12px;align-items:center}} #vol{{flex:1;margin-top:16px}} button{{margin-top:16px;background:#222;color:#eee;border:1px solid #444;border-radius:6px;padding:8px 16px;cursor:pointer}}
  button:hover{{background:#333}} .small{{color:#777;font-size:13px;margin-top:20px}} ol{{padding-left:20px;color:#999;font-size:14px}}
 </style></head><body><main>
 <h1>{name}</h1>
 <div id="title">&nbsp;</div><div id="artist">&nbsp;</div>
-<audio controls preload="none" src="stream"></audio>
-<button id="skip">Skip</button>
+<audio id="player" preload="none"></audio>
+<div class="controls"><button id="play">&#9654; Play</button>
+<input id="vol" type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+<button id="skip">Skip</button></div>
 <div class="small">Up next: <span id="next">-</span> &middot; <span id="listeners">0</span> listening</div>
 <div class="small">Recently played</div><ol id="recent"></ol>
 </main><script>
@@ -474,6 +476,15 @@ $('skip').onclick=async()=>{{let tok=localStorage.getItem('skipToken')||'';
  if(r.status==403){{tok=prompt('Skip token');if(tok===null)return;localStorage.setItem('skipToken',tok);
   r=await fetch('skip?token='+encodeURIComponent(tok),{{method:'POST'}})}}
  setTimeout(poll,2500)}};
+// A live stream can't really pause: the browser would keep (or resume) old audio.
+// So "pause" drops the connection and "play" opens a fresh one at the live edge.
+const a=$('player'), live=()=>a.hasAttribute('src');
+function start(){{a.src='stream?t='+Date.now(); a.play().catch(stop); $('play').innerHTML='&#9632; Stop'}}
+function stop(){{if(!live())return; a.removeAttribute('src'); a.load(); $('play').innerHTML='&#9654; Play'}}
+$('play').onclick=()=>live()?(a.pause(),stop()):start();
+a.addEventListener('pause',stop);   // also catches pause from headset / lock screen
+a.addEventListener('error',stop);   // server restarted, network dropped, ...
+$('vol').oninput=e=>{{a.volume=e.target.value}};
 poll(); setInterval(poll,5000);
 </script></body></html>"""
 
@@ -534,6 +545,10 @@ def make_handler(ctx):
                 self.send_header("icy-metaint", str(ICY_METAINT))
             self.end_headers()
 
+            # A paused player stops reading but keeps the socket open. Without a timeout
+            # this thread would block in write() forever, holding stale audio for when it
+            # resumes; with one, the listener is dropped and the player has to reconnect.
+            self.connection.settimeout(30)
             listener = ctx.broadcaster.subscribe()
             log.info("listener connected from %s (%d total)", self.client_address[0], ctx.broadcaster.count())
             until_meta, last_title = ICY_METAINT, [None]
@@ -553,7 +568,7 @@ def make_handler(ctx):
                         if until_meta == 0:
                             self.wfile.write(icy_block(ctx.state.title(), last_title))
                             until_meta = ICY_METAINT
-            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            except OSError:  # broken pipe, reset, write timeout
                 pass
             finally:
                 ctx.broadcaster.unsubscribe(listener)
