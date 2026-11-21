@@ -106,6 +106,33 @@ cache/*.flac ─► ffmpeg decode ─► Mixer (numpy) ─► ffmpeg encode ─�
 - **Ad breaks:** once `--ad-interval` minutes of audio have aired, the break starts at the next song boundary, so songs are never cut off. Ads have their own shuffle bag, so they rotate evenly. They use the short `--ad-crossfade`, so the opening line of an ad isn't buried under the end of a song. Ads can't be skipped (`/skip` returns 409), are left out of "recently played", and are marked `"ad": true` in `/status`. If the ads directory is empty, no breaks are played.
 - **One encode for everyone:** the encoder runs at real time no matter how many listeners there are, so CPU use stays the same with 1 or 100 listeners. A listener whose connection can't keep up for about 30 s gets dropped rather than stalling everyone else.
 
+## Running it in Docker
+
+The image is `python:3.12-slim` with ffmpeg and numpy added, plus both scripts. `docker-compose.yml` defines the station and two prepare jobs:
+
+```bash
+docker compose run --rm prepare        # music/   -> cache/      (re-run after adding music)
+docker compose run --rm prepare-ads    # ads/     -> ads-cache/
+docker compose up -d --build           # start the station on port 8000
+docker compose kill -s HUP radio       # pick up new tracks now instead of within 60 s
+docker compose logs -f radio
+```
+
+Station settings (name, format, bitrate, crossfade, ads) are in the `command:` list of the `radio` service. You can override the host folders, port, user and skip token in a `.env` file next to the compose file:
+
+```ini
+MUSIC_DIR=/srv/music
+CACHE_DIR=/srv/radio-cache
+ADS_DIR=/srv/ads
+ADS_CACHE_DIR=/srv/radio-ads-cache
+RADIO_PORT=8000
+RADIO_UID=1000          # must be able to write the cache folders
+RADIO_GID=1000
+RADIO_SKIP_TOKEN=secret
+```
+
+The station mounts the caches read-only and runs as an unprivileged user. The prepare jobs have the `tools` profile, so `up` doesn't start them. A host cron job can keep the cache in sync: `*/30 * * * * cd /opt/radio && docker compose run --rm prepare`.
+
 ## Running it as a service (systemd)
 
 ```ini

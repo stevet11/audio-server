@@ -1,0 +1,53 @@
+# Start the station:      docker compose up -d --build
+# Prepare / update music: docker compose run --rm prepare
+# Prepare / update ads:   docker compose run --rm prepare-ads
+# Rescan now:             docker compose kill -s HUP radio
+#
+# Host folders and settings can be overridden in a .env file next to this one
+# (MUSIC_DIR, CACHE_DIR, ADS_DIR, ADS_CACHE_DIR, RADIO_PORT, RADIO_UID, RADIO_GID,
+# RADIO_SKIP_TOKEN).
+
+x-common: &common
+  build: .
+  image: radio-server
+  init: true                                    # forwards signals, reaps ffmpeg children
+  user: "${RADIO_UID:-1000}:${RADIO_GID:-1000}" # must be able to write the cache folders
+
+services:
+  radio:
+    <<: *common
+    restart: unless-stopped
+    ports:
+      - "${RADIO_PORT:-8000}:8000"
+    environment:
+      RADIO_SKIP_TOKEN: ${RADIO_SKIP_TOKEN:-}
+    volumes:
+      - ${CACHE_DIR:-./cache}:/cache:ro
+      - ${ADS_CACHE_DIR:-./ads-cache}:/ads-cache:ro
+      - /etc/localtime:/etc/localtime:ro       # log timestamps in the host's time zone
+    command:
+      - /cache
+      - --name=My Radio
+      - --format=mp3
+      - --bitrate=192k
+      - --crossfade=6
+      - --ads=/ads-cache
+      - --ad-interval=15
+
+  prepare:
+    <<: *common
+    profiles: [tools]          # not started by "up"; run on demand
+    entrypoint: ["python3", "/app/prepare.py"]
+    command: ["/music", "/cache", "--prune"]
+    volumes:
+      - ${MUSIC_DIR:-./music}:/music:ro
+      - ${CACHE_DIR:-./cache}:/cache
+
+  prepare-ads:
+    <<: *common
+    profiles: [tools]
+    entrypoint: ["python3", "/app/prepare.py"]
+    command: ["/ads", "/ads-cache", "--prune"]
+    volumes:
+      - ${ADS_DIR:-./ads}:/ads:ro
+      - ${ADS_CACHE_DIR:-./ads-cache}:/ads-cache
