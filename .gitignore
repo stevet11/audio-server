@@ -1,0 +1,12 @@
+# media and generated caches (large, and not ours to redistribute)
+music/
+cache/
+ads/
+ads-cache/
+*.zip
+
+# python
+venv/
+.venv/
+__pycache__/
+*.pyc
