@@ -76,6 +76,23 @@ If you change `--lufs`, `--true-peak`, `--no-trim`, `--max-gap` or `--gap-keep`,
 | `--ads-per-break` | 1 | ads played back to back in each break |
 | `--ad-crossfade` | 1 | crossfade into, out of and between ads, seconds (capped at `--crossfade`) |
 
+## Choosing a bitrate
+
+Bandwidth is bitrate × listeners. Use `--format` and `--bitrate` to change it:
+
+| setting | per listener, per hour | quality |
+|---|---|---|
+| `--bitrate 192k` (default) | ~86 MB | very good |
+| `--bitrate 128k` | ~58 MB | good; standard for internet radio |
+| `--format aac --bitrate 128k` | ~58 MB | slightly better than MP3 at 128k |
+| `--format aac --bitrate 96k` | ~43 MB | decent |
+| `--bitrate 96k` (MP3) | ~43 MB | noticeably worse on cymbals and reverb |
+| 64k | ~29 MB | only OK for talk |
+
+`--format aac --bitrate 128k` (or plain `--bitrate 128k` for MP3) saves a third of the bandwidth with little audible difference. Both formats play in every browser, VLC, phones and SHOUTcast relays. Below about 96k, ffmpeg's built-in AAC encoder gets weak.
+
+The stream bitrate doesn't affect the cache. The cache is lossless FLAC, and the stream is encoded from it as it plays.
+
 ## How it works
 
 ```
